@@ -1,9 +1,13 @@
-<<<<<<< HEAD
 mod catalog;
 
+use std::fs;
+use std::io::ErrorKind;
+use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>";
+const SHOPPING_LIST_FILE: &str = "shopping-list.json";
+const EMPTY_MESSAGE: &str = "Shopping list is empty.";
+const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> | show | clear>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
@@ -12,52 +16,11 @@ fn main() -> ExitCode {
         .collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    match args.as_slice() {
-        ["recipes", "list"] => {
-            for recipe in catalog::CATALOG {
-                println!("{}", recipe.name);
-            }
-            ExitCode::SUCCESS
-        }
-        ["recipes", "search", term] => {
-            let term = term.trim();
-            if term.is_empty() {
-                return usage_error();
-            }
-            let matches = catalog::recipes_with_ingredient(term);
-            if matches.is_empty() {
-                println!("No recipes match \"{term}\".");
-            }
-            for recipe in matches {
-                println!("{}", recipe.name);
-            }
-            ExitCode::SUCCESS
-        }
-        _ => usage_error(),
-    }
-}
-
-fn usage_error() -> ExitCode {
-    eprintln!("{USAGE}");
-    ExitCode::from(2)
-=======
-use std::fs;
-use std::io::ErrorKind;
-use std::path::Path;
-use std::process::ExitCode;
-
-const SHOPPING_LIST_FILE: &str = "shopping-list.json";
-const EMPTY_MESSAGE: &str = "Shopping list is empty.";
-
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Usage(message)) => {
             eprintln!("ricette: {message}");
-            eprintln!("usage: ricette list <add <item> | show | clear>");
+            eprintln!("{USAGE}");
             ExitCode::from(2)
         }
         Err(CliError::Failure(message)) => {
@@ -74,6 +37,28 @@ enum CliError {
 
 fn run(args: &[&str]) -> Result<(), CliError> {
     match args {
+        ["recipes", "list"] => {
+            for recipe in catalog::CATALOG {
+                println!("{}", recipe.name);
+            }
+            Ok(())
+        }
+        ["recipes", "search", term] => {
+            let term = term.trim();
+            if term.is_empty() {
+                return Err(CliError::Usage(
+                    "the ingredient must not be empty".to_string(),
+                ));
+            }
+            let matches = catalog::recipes_with_ingredient(term);
+            if matches.is_empty() {
+                println!("No recipes match \"{term}\".");
+            }
+            for recipe in matches {
+                println!("{}", recipe.name);
+            }
+            Ok(())
+        }
         ["list", "add", item] => add(Path::new(SHOPPING_LIST_FILE), item),
         ["list", "show"] => show(Path::new(SHOPPING_LIST_FILE)),
         ["list", "clear"] => clear(Path::new(SHOPPING_LIST_FILE)),
@@ -144,5 +129,4 @@ fn save(path: &Path, items: &[String]) -> Result<(), CliError> {
 
 fn failure(path: &Path, reason: &str) -> CliError {
     CliError::Failure(format!("cannot use {}: {reason}", path.display()))
->>>>>>> origin/dev
 }
