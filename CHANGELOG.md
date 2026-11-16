@@ -7,3 +7,7 @@ The agent adds one line under "Unreleased" in each pull request; when you releas
 lines under a new heading with the version and the date.
 
 ## [Unreleased]
+
+### Added
+
+- `ricette list add`, `ricette list show` and `ricette list clear` manage a shopping list stored in `shopping-list.json`.
