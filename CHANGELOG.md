@@ -11,3 +11,4 @@ lines under a new heading with the version and the date.
 ### Added
 
 - `ricette list add`, `ricette list show` and `ricette list clear` manage a shopping list stored in `shopping-list.json`.
+- `ricette list add <item> --qty <n> --unit <u>` adds a measured entry; an entry with the same item and unit adds its quantity to the existing line.
