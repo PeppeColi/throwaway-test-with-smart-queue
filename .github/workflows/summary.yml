@@ -1,0 +1,17 @@
+# No cron: the bot starts it once a day, at SUMMARY_HOUR in its .env.
+name: summary
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  summary:
+    uses: PeppeColi/peppec/.github/workflows/summary.yml@v2
+    with:
+      engine_ref: v2
+    secrets:
+      PEPPEC_APP_PRIVATE_KEY: ${{ secrets.PEPPEC_APP_PRIVATE_KEY }}
+      PEPPEC_TELEGRAM_BOT_TOKEN: ${{ secrets.PEPPEC_TELEGRAM_BOT_TOKEN }}
+      PEPPEC_TELEGRAM_CHAT_ID: ${{ secrets.PEPPEC_TELEGRAM_CHAT_ID }}
