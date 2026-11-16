@@ -1,20 +1,26 @@
-use std::fs;
-use std::io::ErrorKind;
+mod catalog;
+
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
 const SHOPPING_LIST_FILE: &str = "shopping-list.json";
 const EMPTY_MESSAGE: &str = "Shopping list is empty.";
+const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> [--qty <n> --unit <u>] | show | clear>";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Usage(message)) => {
             eprintln!("ricette: {message}");
-            eprintln!("usage: ricette list <add <item> [--qty <n> --unit <u>] | show | clear>");
+            eprintln!("{USAGE}");
             ExitCode::from(2)
         }
         Err(CliError::Failure(message)) => {
@@ -55,6 +61,28 @@ impl Entry {
 
 fn run(args: &[&str]) -> Result<(), CliError> {
     match args {
+        ["recipes", "list"] => {
+            for recipe in catalog::CATALOG {
+                println!("{}", recipe.name);
+            }
+            Ok(())
+        }
+        ["recipes", "search", term] => {
+            let term = term.trim();
+            if term.is_empty() {
+                return Err(CliError::Usage(
+                    "the ingredient must not be empty".to_string(),
+                ));
+            }
+            let matches = catalog::recipes_with_ingredient(term);
+            if matches.is_empty() {
+                println!("No recipes match \"{term}\".");
+            }
+            for recipe in matches {
+                println!("{}", recipe.name);
+            }
+            Ok(())
+        }
         ["list", "add", item, options @ ..] => add(Path::new(SHOPPING_LIST_FILE), item, options),
         ["list", "show"] => show(Path::new(SHOPPING_LIST_FILE)),
         ["list", "clear"] => clear(Path::new(SHOPPING_LIST_FILE)),
@@ -71,6 +99,7 @@ fn add(path: &Path, item: &str, options: &[&str]) -> Result<(), CliError> {
         return Err(CliError::Failure("the item must not be empty".to_string()));
     }
     let measure = parse_measure(options)?;
+    let _lock = lock(path)?;
     let mut entries = load(path)?;
     combine(
         &mut entries,
@@ -153,6 +182,7 @@ fn describe(entry: &Entry) -> String {
 }
 
 fn clear(path: &Path) -> Result<(), CliError> {
+    let _lock = lock(path)?;
     load(path)?;
     save(path, &[])
 }
@@ -202,17 +232,44 @@ fn load(path: &Path) -> Result<Vec<Entry>, CliError> {
     Ok(entries)
 }
 
+/// Takes an exclusive cross-process lock on a sidecar file. It is held until
+/// the returned file is dropped, so a read-modify-write cycle cannot interleave
+/// with another process.
+fn lock(path: &Path) -> Result<File, CliError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&name)
+        .map_err(|error| failure(path, &error.to_string()))?;
+    file.lock()
+        .map_err(|error| failure(path, &error.to_string()))?;
+    Ok(file)
+}
+
 /// Reads one entry of the file: a plain string (the previous format), or an
 /// object with an `item` and, for a measured entry, a positive integer `qty`
 /// and a non-empty `unit`. Returns `None` when the value is none of these.
 fn entry_from_json(value: serde_json::Value) -> Option<Entry> {
     match value {
-        serde_json::Value::String(item) => Some(Entry {
-            item: item.trim().to_string(),
-            measure: None,
-        }),
+        serde_json::Value::String(item) => {
+            let item = item.trim();
+            if item.is_empty() {
+                return None;
+            }
+            Some(Entry {
+                item: item.to_string(),
+                measure: None,
+            })
+        }
         serde_json::Value::Object(fields) => {
-            let item = fields.get("item")?.as_str()?.trim().to_string();
+            let item = fields.get("item")?.as_str()?.trim();
+            if item.is_empty() {
+                return None;
+            }
+            let item = item.to_string();
             let measure = match (fields.get("qty"), fields.get("unit")) {
                 (None, None) => None,
                 (Some(qty), Some(unit)) => {
@@ -235,12 +292,41 @@ fn entry_from_json(value: serde_json::Value) -> Option<Entry> {
 }
 
 /// Writes the list in the current format: an array of objects with `item`,
-/// and `qty` and `unit` when the entry is measured.
+/// and `qty` and `unit` when the entry is measured. It writes to a new temporary
+/// file next to `path` and renames it over `path` only when the write has
+/// succeeded, so a failure keeps the old list. The replacement keeps the
+/// permissions of the old list; a new list is readable and writable only by its
+/// owner.
 fn save(path: &Path, entries: &[Entry]) -> Result<(), CliError> {
     let values: Vec<serde_json::Value> = entries.iter().map(entry_to_json).collect();
     let text = serde_json::to_string_pretty(&values)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    fs::write(path, format!("{text}\n")).map_err(|error| failure(path, &error.to_string()))
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let temporary = Path::new(&name);
+
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        // Only the owner can read the replacement while it is written.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(temporary)?;
+        // The replacement keeps the permissions of the list it replaces.
+        match fs::metadata(path) {
+            Ok(existing) => file.set_permissions(existing.permissions())?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        file.write_all(format!("{text}\n").as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, path)
+    })();
+    result.map_err(|error| {
+        let _ = fs::remove_file(temporary);
+        failure(path, &error.to_string())
+    })
 }
 
 fn entry_to_json(entry: &Entry) -> serde_json::Value {

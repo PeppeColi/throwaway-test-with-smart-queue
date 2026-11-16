@@ -387,6 +387,9 @@ fn invalid_file_makes_every_subcommand_fail_and_leaves_the_file_unchanged() {
         r#"[{"item":"milk","qty":2,"unit":""}]"#,
         r#"[{"qty":2,"unit":"l"}]"#,
         r#"[{"item":3}]"#,
+        r#"[{"item":"   ","qty":2,"unit":"l"}]"#,
+        r#"[{"item":""}]"#,
+        r#"["   "]"#,
     ];
     let subcommands: [&[&str]; 3] = [
         &["list", "show"],
@@ -416,6 +419,95 @@ fn invalid_file_makes_every_subcommand_fail_and_leaves_the_file_unchanged() {
             );
         }
     }
+}
+
+#[test]
+fn concurrent_adds_are_all_kept() {
+    let dir = WorkDir::new("concurrent");
+    let items: Vec<String> = (0..16).map(|n| format!("item{n}")).collect();
+
+    let children: Vec<_> = items
+        .iter()
+        .map(|item| {
+            Command::new(env!("CARGO_BIN_EXE_ricette"))
+                .args(["list", "add", item])
+                .current_dir(&dir.path)
+                .spawn()
+                .expect("spawn the ricette binary")
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().expect("wait").success());
+    }
+
+    let Value::Array(stored) = dir.read_json() else {
+        panic!("shopping-list.json is not an array");
+    };
+    let mut stored: Vec<String> = stored
+        .into_iter()
+        .map(|v| v["item"].as_str().expect("item string").to_string())
+        .collect();
+    stored.sort();
+    let mut expected = items.clone();
+    expected.sort();
+    assert_eq!(stored, expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_write_leaves_the_previous_list_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = WorkDir::new("failed_write");
+    dir.run(&["list", "add", "milk"]);
+    // A read-only directory makes it impossible to create a replacement file.
+    fs::set_permissions(&dir.path, fs::Permissions::from_mode(0o555)).expect("chmod");
+    let writable = fs::File::create(dir.path.join("probe")).is_ok();
+
+    let output = dir.run(&["list", "add", "eggs"]);
+
+    fs::set_permissions(&dir.path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    if writable {
+        return; // permissions are not enforced (for example when running as root)
+    }
+    assert!(!output.status.success(), "the write cannot succeed");
+    assert_eq!(dir.read_json(), items(&["milk"]));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_write_keeps_the_permissions_of_the_existing_list() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = WorkDir::new("keeps_permissions");
+    dir.run(&["list", "add", "milk"]);
+    fs::set_permissions(dir.file(), fs::Permissions::from_mode(0o600)).expect("chmod");
+
+    for args in [&["list", "add", "eggs"][..], &["list", "clear"][..]] {
+        let output = dir.run(args);
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        let mode = fs::metadata(dir.file())
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "after {args:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_list_is_not_readable_by_other_users() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = WorkDir::new("new_list_permissions");
+    let output = dir.run(&["list", "add", "milk"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let mode = fs::metadata(dir.file())
+        .expect("metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o077, 0, "mode {:o}", mode & 0o777);
 }
 
 #[test]
