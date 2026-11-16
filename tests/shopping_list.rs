@@ -271,6 +271,42 @@ fn a_failed_write_leaves_the_previous_list_unchanged() {
     assert_eq!(dir.read_json(), strings(&["milk"]));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_write_keeps_the_permissions_of_the_existing_list() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = WorkDir::new("keeps_permissions");
+    dir.run(&["list", "add", "milk"]);
+    fs::set_permissions(dir.file(), fs::Permissions::from_mode(0o600)).expect("chmod");
+
+    for args in [&["list", "add", "eggs"][..], &["list", "clear"][..]] {
+        let output = dir.run(args);
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        let mode = fs::metadata(dir.file())
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "after {args:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_list_is_not_readable_by_other_users() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = WorkDir::new("new_list_permissions");
+    let output = dir.run(&["list", "add", "milk"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let mode = fs::metadata(dir.file())
+        .expect("metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o077, 0, "mode {:o}", mode & 0o777);
+}
+
 #[test]
 fn empty_or_whitespace_item_is_rejected_and_the_list_is_unchanged() {
     for item in ["", "   ", "\t"] {

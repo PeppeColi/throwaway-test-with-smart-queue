@@ -142,6 +142,8 @@ fn lock(path: &Path) -> Result<File, CliError> {
 
 /// Writes the list to a new temporary file next to `path` and renames it over
 /// `path` only when the write has succeeded, so a failure keeps the old list.
+/// The replacement keeps the permissions of the old list; a new list is
+/// readable and writable only by its owner.
 fn save(path: &Path, items: &[String]) -> Result<(), CliError> {
     let text = serde_json::to_string_pretty(items)
         .map_err(|error| CliError::Failure(error.to_string()))?;
@@ -150,10 +152,18 @@ fn save(path: &Path, items: &[String]) -> Result<(), CliError> {
     let temporary = Path::new(&name);
 
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temporary)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        // Only the owner can read the replacement while it is written.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(temporary)?;
+        // The replacement keeps the permissions of the list it replaces.
+        match fs::metadata(path) {
+            Ok(existing) => file.set_permissions(existing.permissions())?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         file.write_all(format!("{text}\n").as_bytes())?;
         file.sync_all()?;
         drop(file);
