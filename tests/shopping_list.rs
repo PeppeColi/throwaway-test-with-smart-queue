@@ -387,6 +387,9 @@ fn invalid_file_makes_every_subcommand_fail_and_leaves_the_file_unchanged() {
         r#"[{"item":"milk","qty":2,"unit":""}]"#,
         r#"[{"qty":2,"unit":"l"}]"#,
         r#"[{"item":3}]"#,
+        r#"[{"item":"   ","qty":2,"unit":"l"}]"#,
+        r#"[{"item":""}]"#,
+        r#"["   "]"#,
     ];
     let subcommands: [&[&str]; 3] = [
         &["list", "show"],

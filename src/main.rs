@@ -254,12 +254,22 @@ fn lock(path: &Path) -> Result<File, CliError> {
 /// and a non-empty `unit`. Returns `None` when the value is none of these.
 fn entry_from_json(value: serde_json::Value) -> Option<Entry> {
     match value {
-        serde_json::Value::String(item) => Some(Entry {
-            item: item.trim().to_string(),
-            measure: None,
-        }),
+        serde_json::Value::String(item) => {
+            let item = item.trim();
+            if item.is_empty() {
+                return None;
+            }
+            Some(Entry {
+                item: item.to_string(),
+                measure: None,
+            })
+        }
         serde_json::Value::Object(fields) => {
-            let item = fields.get("item")?.as_str()?.trim().to_string();
+            let item = fields.get("item")?.as_str()?.trim();
+            if item.is_empty() {
+                return None;
+            }
+            let item = item.to_string();
             let measure = match (fields.get("qty"), fields.get("unit")) {
                 (None, None) => None,
                 (Some(qty), Some(unit)) => {
