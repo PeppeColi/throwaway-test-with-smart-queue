@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 const SHOPPING_LIST_FILE: &str = "shopping-list.json";
 const EMPTY_MESSAGE: &str = "Shopping list is empty.";
-const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> [--qty <n> --unit <u>] | show | clear>";
+const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> [--qty <n> --unit <u>] | add-recipe <nome> | show | clear>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
@@ -27,12 +27,18 @@ fn main() -> ExitCode {
             eprintln!("ricette: {message}");
             ExitCode::FAILURE
         }
+        Err(CliError::Plain(message)) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
     }
 }
 
 enum CliError {
     Usage(String),
     Failure(String),
+    /// A failure whose message is printed as it is, without the `ricette:` prefix.
+    Plain(String),
 }
 
 /// One line of the shopping list: an item, with a quantity and unit when it is measured.
@@ -84,6 +90,7 @@ fn run(args: &[&str]) -> Result<(), CliError> {
             Ok(())
         }
         ["list", "add", item, options @ ..] => add(Path::new(SHOPPING_LIST_FILE), item, options),
+        ["list", "add-recipe", name] => add_recipe(Path::new(SHOPPING_LIST_FILE), name),
         ["list", "show"] => show(Path::new(SHOPPING_LIST_FILE)),
         ["list", "clear"] => clear(Path::new(SHOPPING_LIST_FILE)),
         _ => Err(CliError::Usage(format!(
@@ -109,6 +116,30 @@ fn add(path: &Path, item: &str, options: &[&str]) -> Result<(), CliError> {
         },
         path,
     )?;
+    save(path, &entries)
+}
+
+/// Adds every ingredient of the recipe `name` to the list, in recipe order, with
+/// the same rules as `add`. The recipe is looked up before the list is touched,
+/// so an unknown recipe creates no file. The list is written once, at the end.
+fn add_recipe(path: &Path, name: &str) -> Result<(), CliError> {
+    let recipe = catalog::find_recipe(name)
+        .ok_or_else(|| CliError::Plain(format!("No recipe named \"{}\".", name.trim())))?;
+    let _lock = lock(path)?;
+    let mut entries = load(path)?;
+    for ingredient in recipe.ingredients {
+        combine(
+            &mut entries,
+            Entry {
+                item: ingredient.name.to_string(),
+                measure: Some(Measure {
+                    qty: ingredient.qty,
+                    unit: ingredient.unit.to_string(),
+                }),
+            },
+            path,
+        )?;
+    }
     save(path, &entries)
 }
 

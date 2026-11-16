@@ -13,3 +13,4 @@ lines under a new heading with the version and the date.
 - `ricette recipes list` and `ricette recipes search <ingredient>` show the built-in recipe catalog and find the recipes that use an ingredient.
 - `ricette list add`, `ricette list show` and `ricette list clear` manage a shopping list stored in `shopping-list.json`.
 - `ricette list add <item> --qty <n> --unit <u>` adds a measured entry; an entry with the same item and unit adds its quantity to the existing line.
+- `ricette list add-recipe <nome>` adds every ingredient of a catalog recipe, with its quantity and unit, to the shopping list.
