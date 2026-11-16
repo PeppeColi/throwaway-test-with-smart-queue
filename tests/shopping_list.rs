@@ -442,7 +442,7 @@ fn concurrent_adds_are_all_kept() {
     };
     let mut stored: Vec<String> = stored
         .into_iter()
-        .map(|v| v.as_str().expect("string").to_string())
+        .map(|v| v["item"].as_str().expect("item string").to_string())
         .collect();
     stored.sort();
     let mut expected = items.clone();
@@ -468,7 +468,7 @@ fn a_failed_write_leaves_the_previous_list_unchanged() {
         return; // permissions are not enforced (for example when running as root)
     }
     assert!(!output.status.success(), "the write cannot succeed");
-    assert_eq!(dir.read_json(), strings(&["milk"]));
+    assert_eq!(dir.read_json(), items(&["milk"]));
 }
 
 #[cfg(unix)]

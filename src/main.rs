@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 const SHOPPING_LIST_FILE: &str = "shopping-list.json";
 const EMPTY_MESSAGE: &str = "Shopping list is empty.";
-const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> | show | clear>";
+const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> [--qty <n> --unit <u>] | show | clear>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
@@ -20,11 +20,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Usage(message)) => {
             eprintln!("ricette: {message}");
-<<<<<<< HEAD
             eprintln!("{USAGE}");
-=======
-            eprintln!("usage: ricette list <add <item> [--qty <n> --unit <u>] | show | clear>");
->>>>>>> origin/dev
             ExitCode::from(2)
         }
         Err(CliError::Failure(message)) => {
@@ -65,7 +61,6 @@ impl Entry {
 
 fn run(args: &[&str]) -> Result<(), CliError> {
     match args {
-<<<<<<< HEAD
         ["recipes", "list"] => {
             for recipe in catalog::CATALOG {
                 println!("{}", recipe.name);
@@ -88,10 +83,7 @@ fn run(args: &[&str]) -> Result<(), CliError> {
             }
             Ok(())
         }
-        ["list", "add", item] => add(Path::new(SHOPPING_LIST_FILE), item),
-=======
         ["list", "add", item, options @ ..] => add(Path::new(SHOPPING_LIST_FILE), item, options),
->>>>>>> origin/dev
         ["list", "show"] => show(Path::new(SHOPPING_LIST_FILE)),
         ["list", "clear"] => clear(Path::new(SHOPPING_LIST_FILE)),
         _ => Err(CliError::Usage(format!(
@@ -106,13 +98,8 @@ fn add(path: &Path, item: &str, options: &[&str]) -> Result<(), CliError> {
     if item.is_empty() {
         return Err(CliError::Failure("the item must not be empty".to_string()));
     }
-<<<<<<< HEAD
-    let _lock = lock(path)?;
-    let mut items = load(path)?;
-    items.push(item.to_string());
-    save(path, &items)
-=======
     let measure = parse_measure(options)?;
+    let _lock = lock(path)?;
     let mut entries = load(path)?;
     combine(
         &mut entries,
@@ -173,7 +160,6 @@ fn parse_unit(value: &str) -> Result<String, CliError> {
         return Err(CliError::Failure("the unit must not be empty".to_string()));
     }
     Ok(unit.to_string())
->>>>>>> origin/dev
 }
 
 fn show(path: &Path) -> Result<(), CliError> {
@@ -246,7 +232,6 @@ fn load(path: &Path) -> Result<Vec<Entry>, CliError> {
     Ok(entries)
 }
 
-<<<<<<< HEAD
 /// Takes an exclusive cross-process lock on a sidecar file. It is held until
 /// the returned file is dropped, so a read-modify-write cycle cannot interleave
 /// with another process.
@@ -264,13 +249,6 @@ fn lock(path: &Path) -> Result<File, CliError> {
     Ok(file)
 }
 
-/// Writes the list to a new temporary file next to `path` and renames it over
-/// `path` only when the write has succeeded, so a failure keeps the old list.
-/// The replacement keeps the permissions of the old list; a new list is
-/// readable and writable only by its owner.
-fn save(path: &Path, items: &[String]) -> Result<(), CliError> {
-    let text = serde_json::to_string_pretty(items)
-=======
 /// Reads one entry of the file: a plain string (the previous format), or an
 /// object with an `item` and, for a measured entry, a positive integer `qty`
 /// and a non-empty `unit`. Returns `None` when the value is none of these.
@@ -304,11 +282,14 @@ fn entry_from_json(value: serde_json::Value) -> Option<Entry> {
 }
 
 /// Writes the list in the current format: an array of objects with `item`,
-/// and `qty` and `unit` when the entry is measured.
+/// and `qty` and `unit` when the entry is measured. It writes to a new temporary
+/// file next to `path` and renames it over `path` only when the write has
+/// succeeded, so a failure keeps the old list. The replacement keeps the
+/// permissions of the old list; a new list is readable and writable only by its
+/// owner.
 fn save(path: &Path, entries: &[Entry]) -> Result<(), CliError> {
     let values: Vec<serde_json::Value> = entries.iter().map(entry_to_json).collect();
     let text = serde_json::to_string_pretty(&values)
->>>>>>> origin/dev
         .map_err(|error| CliError::Failure(error.to_string()))?;
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{}.tmp", std::process::id()));
