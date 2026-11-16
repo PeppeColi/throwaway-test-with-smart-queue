@@ -7,3 +7,7 @@ The agent adds one line under "Unreleased" in each pull request; when you releas
 lines under a new heading with the version and the date.
 
 ## [Unreleased]
+
+### Added
+
+- `ricette recipes list` and `ricette recipes search <ingredient>` show the built-in recipe catalog and find the recipes that use an ingredient.
