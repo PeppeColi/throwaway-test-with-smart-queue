@@ -1,8 +1,13 @@
 mod catalog;
 
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>";
+const SHOPPING_LIST_FILE: &str = "shopping-list.json";
+const EMPTY_MESSAGE: &str = "Shopping list is empty.";
+const USAGE: &str = "usage: ricette recipes list\n       ricette recipes search <ingredient>\n       ricette list <add <item> | show | clear>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
@@ -11,17 +16,39 @@ fn main() -> ExitCode {
         .collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    match args.as_slice() {
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(CliError::Usage(message)) => {
+            eprintln!("ricette: {message}");
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+        Err(CliError::Failure(message)) => {
+            eprintln!("ricette: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+enum CliError {
+    Usage(String),
+    Failure(String),
+}
+
+fn run(args: &[&str]) -> Result<(), CliError> {
+    match args {
         ["recipes", "list"] => {
             for recipe in catalog::CATALOG {
                 println!("{}", recipe.name);
             }
-            ExitCode::SUCCESS
+            Ok(())
         }
         ["recipes", "search", term] => {
             let term = term.trim();
             if term.is_empty() {
-                return usage_error();
+                return Err(CliError::Usage(
+                    "the ingredient must not be empty".to_string(),
+                ));
             }
             let matches = catalog::recipes_with_ingredient(term);
             if matches.is_empty() {
@@ -30,13 +57,124 @@ fn main() -> ExitCode {
             for recipe in matches {
                 println!("{}", recipe.name);
             }
-            ExitCode::SUCCESS
+            Ok(())
         }
-        _ => usage_error(),
+        ["list", "add", item] => add(Path::new(SHOPPING_LIST_FILE), item),
+        ["list", "show"] => show(Path::new(SHOPPING_LIST_FILE)),
+        ["list", "clear"] => clear(Path::new(SHOPPING_LIST_FILE)),
+        _ => Err(CliError::Usage(format!(
+            "unrecognised command: {}",
+            args.join(" ")
+        ))),
     }
 }
 
-fn usage_error() -> ExitCode {
-    eprintln!("{USAGE}");
-    ExitCode::from(2)
+fn add(path: &Path, item: &str) -> Result<(), CliError> {
+    let item = item.trim();
+    if item.is_empty() {
+        return Err(CliError::Failure("the item must not be empty".to_string()));
+    }
+    let _lock = lock(path)?;
+    let mut items = load(path)?;
+    items.push(item.to_string());
+    save(path, &items)
+}
+
+fn show(path: &Path) -> Result<(), CliError> {
+    let items = load(path)?;
+    if items.is_empty() {
+        println!("{EMPTY_MESSAGE}");
+    } else {
+        for item in &items {
+            println!("{item}");
+        }
+    }
+    Ok(())
+}
+
+fn clear(path: &Path) -> Result<(), CliError> {
+    let _lock = lock(path)?;
+    load(path)?;
+    save(path, &[])
+}
+
+/// Reads the shopping list. A missing file is an empty list; a file that is
+/// not a JSON array of strings is an error and is never rewritten.
+fn load(path: &Path) -> Result<Vec<String>, CliError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(failure(path, &error.to_string())),
+    };
+
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| failure(path, &format!("it is not valid JSON ({error})")))?;
+
+    let serde_json::Value::Array(values) = value else {
+        return Err(failure(path, "it is not a JSON array"));
+    };
+
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::String(item) => Ok(item),
+            _ => Err(failure(path, "it is not an array of strings")),
+        })
+        .collect()
+}
+
+/// Takes an exclusive cross-process lock on a sidecar file. It is held until
+/// the returned file is dropped, so a read-modify-write cycle cannot interleave
+/// with another process.
+fn lock(path: &Path) -> Result<File, CliError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&name)
+        .map_err(|error| failure(path, &error.to_string()))?;
+    file.lock()
+        .map_err(|error| failure(path, &error.to_string()))?;
+    Ok(file)
+}
+
+/// Writes the list to a new temporary file next to `path` and renames it over
+/// `path` only when the write has succeeded, so a failure keeps the old list.
+/// The replacement keeps the permissions of the old list; a new list is
+/// readable and writable only by its owner.
+fn save(path: &Path, items: &[String]) -> Result<(), CliError> {
+    let text = serde_json::to_string_pretty(items)
+        .map_err(|error| CliError::Failure(error.to_string()))?;
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let temporary = Path::new(&name);
+
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        // Only the owner can read the replacement while it is written.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(temporary)?;
+        // The replacement keeps the permissions of the list it replaces.
+        match fs::metadata(path) {
+            Ok(existing) => file.set_permissions(existing.permissions())?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        file.write_all(format!("{text}\n").as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, path)
+    })();
+    result.map_err(|error| {
+        let _ = fs::remove_file(temporary);
+        failure(path, &error.to_string())
+    })
+}
+
+fn failure(path: &Path, reason: &str) -> CliError {
+    CliError::Failure(format!("cannot use {}: {reason}", path.display()))
 }

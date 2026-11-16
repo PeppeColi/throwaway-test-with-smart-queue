@@ -11,3 +11,4 @@ lines under a new heading with the version and the date.
 ### Added
 
 - `ricette recipes list` and `ricette recipes search <ingredient>` show the built-in recipe catalog and find the recipes that use an ingredient.
+- `ricette list add`, `ricette list show` and `ricette list clear` manage a shopping list stored in `shopping-list.json`.
