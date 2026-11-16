@@ -1,7 +1,7 @@
 mod catalog;
 
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -74,6 +74,7 @@ fn add(path: &Path, item: &str) -> Result<(), CliError> {
     if item.is_empty() {
         return Err(CliError::Failure("the item must not be empty".to_string()));
     }
+    let _lock = lock(path)?;
     let mut items = load(path)?;
     items.push(item.to_string());
     save(path, &items)
@@ -92,6 +93,7 @@ fn show(path: &Path) -> Result<(), CliError> {
 }
 
 fn clear(path: &Path) -> Result<(), CliError> {
+    let _lock = lock(path)?;
     load(path)?;
     save(path, &[])
 }
@@ -121,10 +123,46 @@ fn load(path: &Path) -> Result<Vec<String>, CliError> {
         .collect()
 }
 
+/// Takes an exclusive cross-process lock on a sidecar file. It is held until
+/// the returned file is dropped, so a read-modify-write cycle cannot interleave
+/// with another process.
+fn lock(path: &Path) -> Result<File, CliError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&name)
+        .map_err(|error| failure(path, &error.to_string()))?;
+    file.lock()
+        .map_err(|error| failure(path, &error.to_string()))?;
+    Ok(file)
+}
+
+/// Writes the list to a new temporary file next to `path` and renames it over
+/// `path` only when the write has succeeded, so a failure keeps the old list.
 fn save(path: &Path, items: &[String]) -> Result<(), CliError> {
     let text = serde_json::to_string_pretty(items)
         .map_err(|error| CliError::Failure(error.to_string()))?;
-    fs::write(path, format!("{text}\n")).map_err(|error| failure(path, &error.to_string()))
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let temporary = Path::new(&name);
+
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temporary)?;
+        file.write_all(format!("{text}\n").as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, path)
+    })();
+    result.map_err(|error| {
+        let _ = fs::remove_file(temporary);
+        failure(path, &error.to_string())
+    })
 }
 
 fn failure(path: &Path, reason: &str) -> CliError {

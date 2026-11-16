@@ -219,6 +219,59 @@ fn invalid_file_makes_every_subcommand_fail_and_leaves_the_file_unchanged() {
 }
 
 #[test]
+fn concurrent_adds_are_all_kept() {
+    let dir = WorkDir::new("concurrent");
+    let items: Vec<String> = (0..16).map(|n| format!("item{n}")).collect();
+
+    let children: Vec<_> = items
+        .iter()
+        .map(|item| {
+            Command::new(env!("CARGO_BIN_EXE_ricette"))
+                .args(["list", "add", item])
+                .current_dir(&dir.path)
+                .spawn()
+                .expect("spawn the ricette binary")
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().expect("wait").success());
+    }
+
+    let Value::Array(stored) = dir.read_json() else {
+        panic!("shopping-list.json is not an array");
+    };
+    let mut stored: Vec<String> = stored
+        .into_iter()
+        .map(|v| v.as_str().expect("string").to_string())
+        .collect();
+    stored.sort();
+    let mut expected = items.clone();
+    expected.sort();
+    assert_eq!(stored, expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_write_leaves_the_previous_list_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = WorkDir::new("failed_write");
+    dir.run(&["list", "add", "milk"]);
+    // A read-only directory makes it impossible to create a replacement file.
+    fs::set_permissions(&dir.path, fs::Permissions::from_mode(0o555)).expect("chmod");
+    let writable = fs::File::create(dir.path.join("probe")).is_ok();
+
+    let output = dir.run(&["list", "add", "eggs"]);
+
+    fs::set_permissions(&dir.path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    if writable {
+        return; // permissions are not enforced (for example when running as root)
+    }
+    assert!(!output.status.success(), "the write cannot succeed");
+    assert_eq!(dir.read_json(), strings(&["milk"]));
+}
+
+#[test]
 fn empty_or_whitespace_item_is_rejected_and_the_list_is_unchanged() {
     for item in ["", "   ", "\t"] {
         let dir = WorkDir::new("empty_item");
