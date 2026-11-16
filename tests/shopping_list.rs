@@ -4,7 +4,7 @@
 //! directory as its working directory, and assert stdout, stderr, the exit
 //! status and the parsed contents of `shopping-list.json`.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -41,9 +41,12 @@ impl WorkDir {
         fs::write(self.file(), contents).expect("write shopping-list.json");
     }
 
+    fn file_text(&self) -> String {
+        fs::read_to_string(self.file()).expect("read shopping-list.json")
+    }
+
     fn read_json(&self) -> Value {
-        let text = fs::read_to_string(self.file()).expect("read shopping-list.json");
-        serde_json::from_str(&text).expect("shopping-list.json is valid JSON")
+        serde_json::from_str(&self.file_text()).expect("shopping-list.json is valid JSON")
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -73,13 +76,9 @@ fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).expect("stderr is UTF-8")
 }
 
-fn strings(values: &[&str]) -> Value {
-    Value::Array(
-        values
-            .iter()
-            .map(|v| Value::String(v.to_string()))
-            .collect(),
-    )
+/// The file contents the new format writes for plain items.
+fn items(names: &[&str]) -> Value {
+    Value::Array(names.iter().map(|name| json!({ "item": name })).collect())
 }
 
 #[test]
@@ -90,7 +89,7 @@ fn add_creates_the_file_and_prints_nothing() {
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output), "");
-    assert_eq!(dir.read_json(), strings(&["milk"]));
+    assert_eq!(dir.read_json(), items(&["milk"]));
 }
 
 #[test]
@@ -124,7 +123,7 @@ fn clear_without_a_file_creates_an_empty_array() {
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output), "");
-    assert_eq!(dir.read_json(), strings(&[]));
+    assert_eq!(dir.read_json(), items(&[]));
 }
 
 #[test]
@@ -136,7 +135,7 @@ fn clear_empties_the_list() {
     let output = dir.run(&["list", "clear"]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output), "");
-    assert_eq!(dir.read_json(), strings(&[]));
+    assert_eq!(dir.read_json(), items(&[]));
 
     let shown = dir.run(&["list", "show"]);
     assert!(shown.status.success(), "stderr: {}", stderr(&shown));
@@ -150,7 +149,7 @@ fn item_with_inner_space_is_kept_whole() {
     let output = dir.run(&["list", "add", "olive oil"]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
 
-    assert_eq!(dir.read_json(), strings(&["olive oil"]));
+    assert_eq!(dir.read_json(), items(&["olive oil"]));
     let shown = dir.run(&["list", "show"]);
     assert_eq!(stdout(&shown), "olive oil\n");
 }
@@ -162,21 +161,214 @@ fn item_is_trimmed_before_it_is_stored() {
     let output = dir.run(&["list", "add", " milk "]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
 
-    assert_eq!(dir.read_json(), strings(&["milk"]));
+    assert_eq!(dir.read_json(), items(&["milk"]));
     let shown = dir.run(&["list", "show"]);
     assert_eq!(stdout(&shown), "milk\n");
 }
 
 #[test]
-fn adding_the_same_item_twice_keeps_both() {
+fn adding_the_same_item_twice_keeps_one_line() {
     let dir = WorkDir::new("duplicate");
     dir.run(&["list", "add", "milk"]);
-    dir.run(&["list", "add", "milk"]);
+
+    let output = dir.run(&["list", "add", "milk"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+
+    let shown = dir.run(&["list", "show"]);
+    assert!(shown.status.success(), "stderr: {}", stderr(&shown));
+    assert_eq!(stdout(&shown), "milk\n");
+    assert_eq!(dir.read_json(), items(&["milk"]));
+}
+
+#[test]
+fn add_with_quantity_and_unit_is_shown_with_both() {
+    let dir = WorkDir::new("measured_add");
+
+    let output = dir.run(&["list", "add", "milk", "--qty", "2", "--unit", "l"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        dir.read_json(),
+        json!([{ "item": "milk", "qty": 2, "unit": "l" }])
+    );
+
+    let shown = dir.run(&["list", "show"]);
+    assert!(shown.status.success(), "stderr: {}", stderr(&shown));
+    assert_eq!(stdout(&shown), "milk 2 l\n");
+}
+
+#[test]
+fn flags_may_come_in_either_order() {
+    let dir = WorkDir::new("flag_order");
+
+    let output = dir.run(&["list", "add", "milk", "--unit", "l", "--qty", "2"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let shown = dir.run(&["list", "show"]);
+    assert_eq!(stdout(&shown), "milk 2 l\n");
+}
+
+#[test]
+fn same_unit_adds_quantities_and_keeps_the_first_position() {
+    let dir = WorkDir::new("same_unit");
+    dir.run(&["list", "add", "milk", "--qty", "2", "--unit", "l"]);
+    dir.run(&["list", "add", "eggs"]);
+
+    let output = dir.run(&["list", "add", "milk", "--qty", "1", "--unit", "l"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let shown = dir.run(&["list", "show"]);
+    assert_eq!(stdout(&shown), "milk 3 l\neggs\n");
+    assert_eq!(
+        dir.read_json(),
+        json!([{ "item": "milk", "qty": 3, "unit": "l" }, { "item": "eggs" }])
+    );
+}
+
+#[test]
+fn different_unit_stays_a_separate_line_in_insertion_order() {
+    let dir = WorkDir::new("other_unit");
+    dir.run(&["list", "add", "milk", "--qty", "2", "--unit", "l"]);
+
+    let output = dir.run(&["list", "add", "milk", "--qty", "1", "--unit", "kg"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let shown = dir.run(&["list", "show"]);
+    assert_eq!(stdout(&shown), "milk 2 l\nmilk 1 kg\n");
+}
+
+#[test]
+fn plain_item_stays_a_separate_line_from_a_measured_one() {
+    let dir = WorkDir::new("plain_and_measured");
+    dir.run(&["list", "add", "milk", "--qty", "2", "--unit", "l"]);
+
+    let output = dir.run(&["list", "add", "milk"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let shown = dir.run(&["list", "show"]);
+    assert_eq!(stdout(&shown), "milk 2 l\nmilk\n");
+}
+
+#[test]
+fn unit_is_trimmed_and_compared_case_sensitively() {
+    let dir = WorkDir::new("unit_rules");
+    dir.run(&["list", "add", "milk", "--qty", "1", "--unit", " l "]);
+    dir.run(&["list", "add", "milk", "--qty", "1", "--unit", "L"]);
+    dir.run(&["list", "add", "milk", "--qty", "4", "--unit", "l"]);
 
     let shown = dir.run(&["list", "show"]);
 
     assert!(shown.status.success(), "stderr: {}", stderr(&shown));
-    assert_eq!(stdout(&shown), "milk\nmilk\n");
+    assert_eq!(stdout(&shown), "milk 5 l\nmilk 1 L\n");
+    assert_eq!(
+        dir.read_json(),
+        json!([
+            { "item": "milk", "qty": 5, "unit": "l" },
+            { "item": "milk", "qty": 1, "unit": "L" }
+        ])
+    );
+}
+
+#[test]
+fn invalid_quantity_or_unit_is_rejected_and_the_list_is_unchanged() {
+    let argument_lists: [&[&str]; 8] = [
+        &["list", "add", "milk", "--qty", "2"],
+        &["list", "add", "milk", "--unit", "l"],
+        &["list", "add", "milk", "--qty", "0", "--unit", "l"],
+        &["list", "add", "milk", "--qty", "-1", "--unit", "l"],
+        &["list", "add", "milk", "--qty", "1.5", "--unit", "l"],
+        &["list", "add", "milk", "--qty", "two", "--unit", "l"],
+        &["list", "add", "milk", "--qty", "2", "--unit", ""],
+        &["list", "add", "milk", "--qty", "2", "--unit", "   "],
+    ];
+
+    for args in argument_lists {
+        let dir = WorkDir::new("invalid_measure");
+        dir.run(&["list", "add", "eggs"]);
+        let before = dir.file_text();
+
+        let output = dir.run(args);
+
+        assert!(!output.status.success(), "{args:?} must exit non-zero");
+        assert!(
+            !stderr(&output).is_empty(),
+            "{args:?} must write an error to stderr"
+        );
+        assert_eq!(
+            dir.file_text(),
+            before,
+            "{args:?} must leave the list unchanged"
+        );
+    }
+}
+
+#[test]
+fn empty_item_with_quantity_and_unit_is_rejected_and_the_list_is_unchanged() {
+    for item in ["", "   "] {
+        let dir = WorkDir::new("empty_measured_item");
+        dir.run(&["list", "add", "milk"]);
+
+        let output = dir.run(&["list", "add", item, "--qty", "1", "--unit", "l"]);
+
+        assert!(
+            !output.status.success(),
+            "adding {item:?} must exit non-zero"
+        );
+        assert!(
+            !stderr(&output).is_empty(),
+            "adding {item:?} must write an error to stderr"
+        );
+        assert_eq!(dir.read_json(), items(&["milk"]));
+    }
+}
+
+#[test]
+fn legacy_file_is_read_as_plain_entries_and_show_does_not_rewrite_it() {
+    let dir = WorkDir::new("legacy_show");
+    let legacy = r#"["milk","milk","eggs"]"#;
+    dir.write_file(legacy);
+
+    let output = dir.run(&["list", "show"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "milk\neggs\n");
+    assert_eq!(dir.file_text(), legacy, "show must not write the file");
+}
+
+#[test]
+fn add_rewrites_a_legacy_file_as_objects_and_keeps_its_entries() {
+    let dir = WorkDir::new("legacy_add");
+    dir.write_file(r#"["milk","eggs"]"#);
+
+    let output = dir.run(&["list", "add", "milk", "--qty", "2", "--unit", "l"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        dir.read_json(),
+        json!([
+            { "item": "milk" },
+            { "item": "eggs" },
+            { "item": "milk", "qty": 2, "unit": "l" }
+        ])
+    );
+
+    let shown = dir.run(&["list", "show"]);
+    assert!(shown.status.success(), "stderr: {}", stderr(&shown));
+    assert_eq!(stdout(&shown), "milk\neggs\nmilk 2 l\n");
+}
+
+#[test]
+fn entries_with_the_same_item_and_unit_are_combined_on_read() {
+    let dir = WorkDir::new("combine_on_read");
+    dir.write_file(
+        r#"[{"item":"milk","qty":2,"unit":"l"},{"item":"eggs"},{"item":"milk","qty":3,"unit":"l"},"eggs"]"#,
+    );
+
+    let output = dir.run(&["list", "show"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "milk 5 l\neggs\n");
 }
 
 #[test]
@@ -187,6 +379,14 @@ fn invalid_file_makes_every_subcommand_fail_and_leaves_the_file_unchanged() {
         r#"[1, 2]"#,
         r#"["milk", 3]"#,
         r#"["milk", null]"#,
+        r#"[{"item":"milk","qty":2}]"#,
+        r#"[{"item":"milk","unit":"l"}]"#,
+        r#"[{"item":"milk","qty":0,"unit":"l"}]"#,
+        r#"[{"item":"milk","qty":-1,"unit":"l"}]"#,
+        r#"[{"item":"milk","qty":1.5,"unit":"l"}]"#,
+        r#"[{"item":"milk","qty":2,"unit":""}]"#,
+        r#"[{"qty":2,"unit":"l"}]"#,
+        r#"[{"item":3}]"#,
     ];
     let subcommands: [&[&str]; 3] = [
         &["list", "show"],
@@ -210,7 +410,7 @@ fn invalid_file_makes_every_subcommand_fail_and_leaves_the_file_unchanged() {
                 "{args:?} on {contents:?} must write an error to stderr"
             );
             assert_eq!(
-                fs::read_to_string(dir.file()).expect("read shopping-list.json"),
+                dir.file_text(),
                 contents,
                 "{args:?} on {contents:?} must leave the file unchanged"
             );
@@ -323,6 +523,6 @@ fn empty_or_whitespace_item_is_rejected_and_the_list_is_unchanged() {
             !stderr(&output).is_empty(),
             "adding {item:?} must write an error to stderr"
         );
-        assert_eq!(dir.read_json(), strings(&["milk"]));
+        assert_eq!(dir.read_json(), items(&["milk"]));
     }
 }
